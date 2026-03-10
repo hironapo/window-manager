@@ -15,6 +15,15 @@ Windows 11 向けウィンドウ配置管理ツール
 
 import sys
 
+# Windows コンソールの文字コードを UTF-8 に統一（reconfigure で安全に変更）
+try:
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    if hasattr(sys.stderr, 'reconfigure'):
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+
 
 def check_deps():
     missing = []
@@ -100,7 +109,7 @@ class WindowManagerApp:
         print('  Window Manager  起動中')
         print('=' * 45)
         print(f'  ポップアップ  : {popup_hk.upper()}')
-        print(f'  管理メニュー  : ポップアップ → ⚙ 管理メニュー')
+        print(f'  管理メニュー  : ポップアップ → 管理メニューボタン')
         print(f'  終了          : このウィンドウを閉じる')
         print('=' * 45)
         self.root.mainloop()

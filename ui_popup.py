@@ -1,15 +1,17 @@
 """
-ui_popup.py - グローバルホットキーで表示するポップアップ選択メニュー
+ui_popup.py - コマンドパレット風ポップアップ（モダンデザイン）
 """
 import tkinter as tk
 
 DARK_NAVY  = '#003366'
 ROYAL_BLUE = '#0055AA'
 LIGHT_BLUE = '#E8F4FC'
-RED        = '#CC0000'
 WHITE      = '#FFFFFF'
-GRAY_LINE  = '#CCCCCC'
-GRAY_TEXT  = '#666666'
+GRAY_BG    = '#F5F7FA'
+GRAY_LINE  = '#E0E4EA'
+GRAY_TEXT  = '#888888'
+HOVER_BG   = '#EBF3FB'
+BADGE_BG   = '#003366'
 
 
 class PopupMenu:
@@ -27,125 +29,162 @@ class PopupMenu:
         self.window = tk.Toplevel(self.root)
         self.window.overrideredirect(True)
         self.window.attributes('-topmost', True)
-        self.window.configure(bg=WHITE)
+        self.window.configure(bg=GRAY_LINE)  # 外枠色として細いボーダーに見せる
 
         self._build()
-        self._center()
+        self._position_top_center()
 
         self.window.focus_force()
         self.window.bind('<Escape>', lambda _: self.close())
-        self.window.bind('<FocusOut>', lambda _: self.close())
+        self.window.bind('<FocusOut>', self._on_focus_out)
 
     def close(self):
         if self.window and self.window.winfo_exists():
             self.window.destroy()
         self.window = None
 
-    # ─────────────────────────────────────────
-    def _center(self):
+    def _on_focus_out(self, event):
+        # 子ウィジェットへのフォーカス移動では閉じない
+        try:
+            focused = self.window.focus_get()
+            if focused and str(focused).startswith(str(self.window)):
+                return
+        except Exception:
+            pass
+        self.close()
+
+    # ── 位置: 画面上部中央 ───────────────────
+    def _position_top_center(self):
         self.window.update_idletasks()
         sw = self.window.winfo_screenwidth()
-        sh = self.window.winfo_screenheight()
         w  = self.window.winfo_reqwidth()
         h  = self.window.winfo_reqheight()
-        self.window.geometry(f'+{(sw - w) // 2}+{(sh - h) // 2}')
+        x  = (sw - w) // 2
+        y  = max(80, int(self.window.winfo_screenheight() * 0.12))
+        self.window.geometry(f'{w}x{h}+{x}+{y}')
 
     # ─────────────────────────────────────────
     def _build(self):
-        # ── タイトルバー ──────────────────────
-        title_bar = tk.Frame(self.window, bg=DARK_NAVY, height=42)
-        title_bar.pack(fill='x')
-        title_bar.pack_propagate(False)
+        # 1px ボーダーを GRAY_LINE の外枠フレームで再現
+        inner = tk.Frame(self.window, bg=WHITE)
+        inner.pack(padx=1, pady=1, fill='both', expand=True)
 
-        tk.Label(title_bar, text='ウィンドウ配置',
-                 bg=DARK_NAVY, fg=WHITE,
-                 font=('Meiryo', 12, 'bold'),
-                 padx=14, anchor='w').pack(side='left', fill='y')
+        # ── ヘッダー ──────────────────────────
+        hdr = tk.Frame(inner, bg=WHITE, pady=12, padx=16)
+        hdr.pack(fill='x')
 
-        close = tk.Label(title_bar, text='✕',
-                         bg=DARK_NAVY, fg=WHITE,
-                         font=('Meiryo', 11), cursor='hand2', padx=14)
-        close.pack(side='right', fill='y')
-        close.bind('<Button-1>', lambda _: self.close())
+        tk.Label(hdr, text='WINDOW LAYOUT',
+                 bg=WHITE, fg=DARK_NAVY,
+                 font=('Meiryo', 9, 'bold'),
+                 anchor='w').pack(side='left')
+
+        tk.Label(hdr, text='ESC',
+                 bg=GRAY_BG, fg=GRAY_TEXT,
+                 font=('Meiryo', 8),
+                 padx=6, pady=1, relief='flat').pack(side='right', padx=(0, 2))
+        tk.Label(hdr, text='閉じる:',
+                 bg=WHITE, fg=GRAY_TEXT,
+                 font=('Meiryo', 8)).pack(side='right')
+
+        # 区切り
+        tk.Frame(inner, height=1, bg=GRAY_LINE).pack(fill='x')
 
         # ── プリセット一覧 ────────────────────
-        body = tk.Frame(self.window, bg=WHITE, padx=10, pady=8)
-        body.pack(fill='both', expand=True)
-
         presets = self.config.get_presets()
-        if presets:
-            for i, preset in enumerate(presets):
-                self._preset_row(body, preset, i)
-        else:
-            tk.Label(body,
-                     text='プリセットがありません\n管理メニューから追加してください',
-                     bg=WHITE, fg='#999999',
-                     font=('Meiryo', 9), pady=16).pack()
 
-        # ── 区切り線 ──────────────────────────
-        tk.Frame(self.window, height=1, bg=GRAY_LINE).pack(fill='x')
+        if presets:
+            list_frame = tk.Frame(inner, bg=WHITE)
+            list_frame.pack(fill='both', expand=True, pady=4)
+            for i, preset in enumerate(presets):
+                self._preset_row(list_frame, preset, i)
+        else:
+            tk.Label(inner,
+                     text='プリセットなし  ー  管理メニューから追加',
+                     bg=WHITE, fg=GRAY_TEXT,
+                     font=('Meiryo', 9), pady=20).pack()
+
+        # 区切り
+        tk.Frame(inner, height=1, bg=GRAY_LINE).pack(fill='x')
 
         # ── フッター ──────────────────────────
-        footer = tk.Frame(self.window, bg=LIGHT_BLUE, padx=10, pady=7)
+        footer = tk.Frame(inner, bg=GRAY_BG, padx=14, pady=8)
         footer.pack(fill='x')
 
-        tk.Label(footer, text='ESC で閉じる',
-                 bg=LIGHT_BLUE, fg=GRAY_TEXT,
-                 font=('Meiryo', 8)).pack(side='left')
-
-        manage_btn = tk.Button(footer, text='⚙ 管理メニュー',
-                               bg=ROYAL_BLUE, fg=WHITE,
-                               font=('Meiryo', 9, 'bold'),
-                               relief='flat', cursor='hand2',
-                               padx=10, pady=3,
-                               command=self._open_manage)
+        manage_btn = tk.Button(
+            footer, text='管理メニュー',
+            bg=ROYAL_BLUE, fg=WHITE,
+            font=('Meiryo', 8, 'bold'),
+            relief='flat', cursor='hand2',
+            padx=12, pady=3,
+            command=self._open_manage
+        )
         manage_btn.pack(side='right')
+
+        tk.Label(footer,
+                 text='数字キーで即実行',
+                 bg=GRAY_BG, fg=GRAY_TEXT,
+                 font=('Meiryo', 8)).pack(side='left', pady=1)
 
     # ─────────────────────────────────────────
     def _preset_row(self, parent, preset, index):
         from window_mgr import apply_preset
 
-        row = tk.Frame(parent, bg=WHITE, cursor='hand2')
-        row.pack(fill='x', pady=2)
+        # 偶数行に淡い背景
+        row_bg = WHITE if index % 2 == 0 else GRAY_BG
+
+        row = tk.Frame(parent, bg=row_bg, cursor='hand2', pady=0)
+        row.pack(fill='x')
+
+        # 左アクセントライン
+        accent = tk.Frame(row, bg=WHITE, width=3)
+        accent.pack(side='left', fill='y')
 
         # 番号バッジ
-        badge = tk.Label(row, text=str(index + 1),
-                         bg=DARK_NAVY, fg=WHITE,
-                         font=('Meiryo', 9, 'bold'),
-                         width=2, padx=4, pady=3)
-        badge.pack(side='left', padx=(0, 8))
+        badge = tk.Label(row,
+                         text=str(index + 1) if index < 9 else ' ',
+                         bg=BADGE_BG, fg=WHITE,
+                         font=('Meiryo', 8, 'bold'),
+                         width=2, padx=4, pady=8)
+        badge.pack(side='left', padx=(8, 10))
 
-        name = tk.Label(row, text=preset.get('name', '(名前なし)'),
-                        bg=WHITE, fg=DARK_NAVY,
-                        font=('Meiryo', 10), anchor='w', pady=4)
-        name.pack(side='left', fill='x', expand=True)
+        name = tk.Label(row,
+                        text=preset.get('name', '(名前なし)'),
+                        bg=row_bg, fg=DARK_NAVY,
+                        font=('Meiryo', 10), anchor='w')
+        name.pack(side='left', fill='x', expand=True, pady=8)
 
         hk_text = preset.get('hotkey', '')
-        hk = tk.Label(row, text=hk_text.upper() if hk_text else '',
-                      bg=WHITE, fg='#999999',
-                      font=('Meiryo', 8), padx=8)
-        hk.pack(side='right')
+        if hk_text:
+            hk = tk.Label(row,
+                          text=hk_text.upper(),
+                          bg=GRAY_BG, fg=GRAY_TEXT,
+                          font=('Meiryo', 8),
+                          padx=6, pady=2, relief='flat')
+            hk.pack(side='right', padx=12, pady=6)
+        else:
+            hk = tk.Label(row, bg=row_bg)
 
-        widgets = [row, name, hk]
+        all_widgets = [row, accent, name, hk]
 
         def on_enter(_):
-            for w in widgets:
-                w.configure(bg=LIGHT_BLUE)
+            for w in all_widgets:
+                w.configure(bg=HOVER_BG)
+            accent.configure(bg=ROYAL_BLUE)
 
         def on_leave(_):
-            for w in widgets:
-                w.configure(bg=WHITE)
+            for w in all_widgets:
+                w.configure(bg=row_bg)
+            accent.configure(bg=WHITE)
 
         def on_click(_=None):
             self.close()
             apply_preset(preset)
 
-        for w in widgets:
+        for w in [row, name]:
             w.bind('<Enter>', on_enter)
             w.bind('<Leave>', on_leave)
             w.bind('<Button-1>', on_click)
 
-        # 数字キーで即実行
         if index < 9:
             self.window.bind(str(index + 1), on_click)
 

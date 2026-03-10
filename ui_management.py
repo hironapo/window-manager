@@ -35,11 +35,13 @@ QUICK_LAYOUTS = {
 
 
 def _make_btn(parent, text, command, bg=DARK_NAVY, fg=WHITE, **kw):
+    defaults = {'padx': 10, 'pady': 4}
+    defaults.update(kw)
     return tk.Button(parent, text=text, command=command,
                      bg=bg, fg=fg,
                      font=('Meiryo', 9, 'bold'),
                      relief='flat', cursor='hand2',
-                     padx=10, pady=4, **kw)
+                     **defaults)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -126,16 +128,16 @@ class ManagementWindow:
         self._build_detail()
 
     # ── 詳細パネル ───────────────────────────
-    def _build_detail(self):
+    def _build_detail(self, mode='arrange'):
         for w in self.right.winfo_children():
             w.destroy()
         self._row_data.clear()
 
         tk.Label(self.right, text='プリセット詳細',
                  bg=WHITE, fg=DARK_NAVY,
-                 font=('Meiryo', 10, 'bold')).pack(anchor='w', pady=(0, 8))
+                 font=('Meiryo', 10, 'bold')).pack(anchor='w', pady=(0, 6))
 
-        # 名前
+        # ── 共通：名前・ホットキー ────────────
         r = tk.Frame(self.right, bg=WHITE)
         r.pack(fill='x', pady=2)
         tk.Label(r, text='名前：', bg=WHITE, fg=DARK_NAVY,
@@ -145,7 +147,6 @@ class ManagementWindow:
                  font=('Meiryo', 10), fg=DARK_NAVY,
                  relief='solid', bd=1).pack(side='left', fill='x', expand=True)
 
-        # ホットキー
         r2 = tk.Frame(self.right, bg=WHITE)
         r2.pack(fill='x', pady=2)
         tk.Label(r2, text='ホットキー：', bg=WHITE, fg=DARK_NAVY,
@@ -156,19 +157,121 @@ class ManagementWindow:
                         relief='solid', bd=1, width=18)
         hk_e.pack(side='left')
         hk_e.bind('<KeyPress>', self._capture_hotkey_entry(self.hotkey_var))
-        tk.Label(r2, text='(クリックしてキー押下で自動入力)',
+        tk.Label(r2, text='(クリックしてキー押下)',
                  bg=WHITE, fg='#999999', font=('Meiryo', 8)).pack(side='left', padx=6)
 
-        # ウィンドウ一覧ヘッダ
-        tk.Label(self.right, text='ウィンドウ配置：',
-                 bg=WHITE, fg=DARK_NAVY,
-                 font=('Meiryo', 10, 'bold')).pack(anchor='w', pady=(10, 4))
+        # ── モード切り替えタブ ────────────────
+        self._mode_var = tk.StringVar(value=mode)
+        tab_row = tk.Frame(self.right, bg=WHITE)
+        tab_row.pack(fill='x', pady=(10, 0))
 
-        # テーブル外枠
-        tbl_outer = tk.Frame(self.right, bg=GRAY_LINE, bd=1)
+        def make_tab(text, val):
+            def switch():
+                self._mode_var.set(val)
+                _refresh_mode_panel()
+            btn = tk.Button(tab_row, text=text, command=switch,
+                            font=('Meiryo', 9, 'bold'), relief='flat',
+                            cursor='hand2', padx=14, pady=4)
+            btn.pack(side='left', padx=(0, 2))
+            return btn
+
+        self._tab_arrange = make_tab('アレンジ（自動タイル）', 'arrange')
+        self._tab_custom  = make_tab('カスタム（位置指定）',  'custom')
+
+        # モードパネル入れ替えエリア
+        self._mode_frame = tk.Frame(self.right, bg=WHITE)
+        self._mode_frame.pack(fill='both', expand=True, pady=(4, 0))
+
+        def _refresh_mode_panel():
+            for w in self._mode_frame.winfo_children():
+                w.destroy()
+            m = self._mode_var.get()
+            if m == 'arrange':
+                self._tab_arrange.config(bg=DARK_NAVY, fg=WHITE)
+                self._tab_custom.config(bg='#DDDDDD', fg=DARK_NAVY)
+                self._build_arrange_panel(self._mode_frame)
+            else:
+                self._tab_arrange.config(bg='#DDDDDD', fg=DARK_NAVY)
+                self._tab_custom.config(bg=DARK_NAVY, fg=WHITE)
+                self._build_custom_panel(self._mode_frame)
+
+        _refresh_mode_panel()
+
+    # ── アレンジパネル（シンプル）────────────
+    def _build_arrange_panel(self, parent):
+        wrap = tk.Frame(parent, bg=LIGHT_BLUE, relief='solid', bd=1)
+        wrap.pack(fill='x', pady=6, padx=0)
+
+        inner = tk.Frame(wrap, bg=LIGHT_BLUE, padx=14, pady=12)
+        inner.pack(fill='x')
+
+        def row_label(text):
+            tk.Label(inner, text=text, bg=LIGHT_BLUE, fg=DARK_NAVY,
+                     font=('Meiryo', 10), width=14, anchor='w').pack(side='left')
+
+        # アプリ名
+        r1 = tk.Frame(inner, bg=LIGHT_BLUE)
+        r1.pack(fill='x', pady=3)
+        tk.Label(r1, text='アプリ名：', bg=LIGHT_BLUE, fg=DARK_NAVY,
+                 font=('Meiryo', 10), width=14, anchor='w').pack(side='left')
+        self.arr_app_var = tk.StringVar()
+        app_e = tk.Entry(r1, textvariable=self.arr_app_var,
+                         font=('Meiryo', 10), fg=DARK_NAVY,
+                         relief='solid', bd=1, width=20)
+        app_e.pack(side='left')
+        pick_btn = tk.Button(r1, text='選択',
+                             bg=ROYAL_BLUE, fg=WHITE,
+                             font=('Meiryo', 8, 'bold'),
+                             relief='flat', cursor='hand2', padx=8,
+                             command=lambda: WindowPicker(self.window, lambda n: self.arr_app_var.set(n)))
+        pick_btn.pack(side='left', padx=(6, 0))
+
+        # タイトル絞り込み
+        r2 = tk.Frame(inner, bg=LIGHT_BLUE)
+        r2.pack(fill='x', pady=3)
+        tk.Label(r2, text='タイトル絞り込み：', bg=LIGHT_BLUE, fg=DARK_NAVY,
+                 font=('Meiryo', 10), width=14, anchor='w').pack(side='left')
+        self.arr_title_var = tk.StringVar()
+        tk.Entry(r2, textvariable=self.arr_title_var,
+                 font=('Meiryo', 10), fg=DARK_NAVY,
+                 relief='solid', bd=1, width=20).pack(side='left')
+        tk.Label(r2, text='(空欄=全て)',
+                 bg=LIGHT_BLUE, fg='#666666', font=('Meiryo', 8)).pack(side='left', padx=6)
+
+        # 並べ方
+        r3 = tk.Frame(inner, bg=LIGHT_BLUE)
+        r3.pack(fill='x', pady=3)
+        tk.Label(r3, text='並べ方：', bg=LIGHT_BLUE, fg=DARK_NAVY,
+                 font=('Meiryo', 10), width=14, anchor='w').pack(side='left')
+        self.arr_dir_var = tk.StringVar(value='horizontal')
+        ARRANGE_OPTIONS = [('横並び', 'horizontal'), ('縦並び', 'vertical'), ('タイル(格子)', 'tile')]
+        for label, val in ARRANGE_OPTIONS:
+            tk.Radiobutton(r3, text=label, variable=self.arr_dir_var, value=val,
+                           bg=LIGHT_BLUE, fg=DARK_NAVY,
+                           font=('Meiryo', 10), activebackground=LIGHT_BLUE,
+                           selectcolor=WHITE).pack(side='left', padx=8)
+
+        # ヒント
+        hint = tk.Frame(parent, bg=WHITE)
+        hint.pack(fill='x', padx=0, pady=(0, 4))
+        tk.Label(hint,
+                 text='実行時に一致する全ウィンドウを自動で等分割配置します',
+                 bg=WHITE, fg='#666666', font=('Meiryo', 8)).pack(anchor='w')
+
+        # 保存ボタン
+        save_row = tk.Frame(parent, bg=WHITE)
+        save_row.pack(fill='x', pady=(6, 0))
+        _make_btn(save_row, '保存', self._save_preset, bg=DARK_NAVY, width=12).pack(side='right')
+
+    # ── カスタムパネル（従来）────────────────
+    def _build_custom_panel(self, parent):
+        tk.Label(parent, text='ウィンドウ配置：',
+                 bg=WHITE, fg=DARK_NAVY,
+                 font=('Meiryo', 10, 'bold')).pack(anchor='w', pady=(4, 4))
+
+        tbl_outer = tk.Frame(parent, bg=GRAY_LINE, bd=1)
         tbl_outer.pack(fill='both', expand=True)
 
-        # テーブルヘッダ行
         hdr = tk.Frame(tbl_outer, bg=DARK_NAVY)
         hdr.pack(fill='x')
         for col, w in [('アプリ名', 16), ('クイックレイアウト', 15),
@@ -176,33 +279,24 @@ class ManagementWindow:
             tk.Label(hdr, text=col, bg=DARK_NAVY, fg=WHITE,
                      font=('Meiryo', 9, 'bold'), width=w, pady=4).pack(side='left')
 
-        # スクロール可能エリア
-        canvas = tk.Canvas(tbl_outer, bg=WHITE, bd=0, highlightthickness=0, height=150)
+        canvas = tk.Canvas(tbl_outer, bg=WHITE, bd=0, highlightthickness=0, height=130)
         scrollbar = tk.Scrollbar(tbl_outer, orient='vertical', command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side='right', fill='y')
         canvas.pack(side='left', fill='both', expand=True)
 
         self.win_list_frame = tk.Frame(canvas, bg=WHITE)
-        canvas_window = canvas.create_window((0, 0), window=self.win_list_frame, anchor='nw')
+        cw = canvas.create_window((0, 0), window=self.win_list_frame, anchor='nw')
+        self.win_list_frame.bind('<Configure>', lambda _: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.bind('<Configure>', lambda e: canvas.itemconfig(cw, width=e.width))
 
-        def on_frame_configure(_):
-            canvas.configure(scrollregion=canvas.bbox('all'))
-        def on_canvas_configure(e):
-            canvas.itemconfig(canvas_window, width=e.width)
-
-        self.win_list_frame.bind('<Configure>', on_frame_configure)
-        canvas.bind('<Configure>', on_canvas_configure)
-
-        # ボタン行
-        win_btns = tk.Frame(self.right, bg=WHITE)
+        win_btns = tk.Frame(parent, bg=WHITE)
         win_btns.pack(fill='x', pady=(6, 0))
         _make_btn(win_btns, '＋ ウィンドウ追加', self._pick_window, bg=ROYAL_BLUE).pack(side='left', padx=(0, 6))
         _make_btn(win_btns, '現在の配置を取り込む', self._capture_layout, bg='#555555').pack(side='left')
 
-        # 保存ボタン
-        save_row = tk.Frame(self.right, bg=WHITE)
-        save_row.pack(fill='x', pady=(10, 0))
+        save_row = tk.Frame(parent, bg=WHITE)
+        save_row.pack(fill='x', pady=(8, 0))
         _make_btn(save_row, '保存', self._save_preset, bg=DARK_NAVY, width=12).pack(side='right')
 
     # ── 行追加 ───────────────────────────────
@@ -306,11 +400,34 @@ class ManagementWindow:
         if not name:
             messagebox.showerror('エラー', '名前を入力してください', parent=self.window)
             return
-        data = {
-            'name': name,
-            'hotkey': self.hotkey_var.get().strip(),
-            'windows': self._get_windows_from_rows()
-        }
+
+        mode = getattr(self, '_mode_var', None)
+        mode = mode.get() if mode else 'custom'
+
+        if mode == 'arrange':
+            app = getattr(self, 'arr_app_var', None)
+            app = app.get().strip() if app else ''
+            if not app:
+                messagebox.showerror('エラー', 'アプリ名を入力してください', parent=self.window)
+                return
+            title = getattr(self, 'arr_title_var', None)
+            title = title.get().strip() if title else ''
+            data = {
+                'name':    name,
+                'hotkey':  self.hotkey_var.get().strip(),
+                'mode':    'arrange',
+                'app':     app,
+                'title':   title or None,
+                'arrange': getattr(self, 'arr_dir_var', tk.StringVar()).get(),
+            }
+        else:
+            data = {
+                'name':    name,
+                'hotkey':  self.hotkey_var.get().strip(),
+                'mode':    'custom',
+                'windows': self._get_windows_from_rows(),
+            }
+
         if self.selected_id:
             self.config.update_preset(self.selected_id, data)
         else:
@@ -323,7 +440,7 @@ class ManagementWindow:
     def _new_preset(self):
         self.selected_id = None
         self.listbox.selection_clear(0, 'end')
-        self._build_detail()
+        self._build_detail(mode='arrange')
 
     def _delete_preset(self):
         if not self.selected_id:
@@ -352,10 +469,22 @@ class ManagementWindow:
         pid = self._preset_ids[sel[0]]
         self.selected_id = pid
         preset = self.config.get_preset(pid)
-        if preset:
-            self._build_detail()
-            self.name_var.set(preset.get('name', ''))
-            self.hotkey_var.set(preset.get('hotkey', ''))
+        if not preset:
+            return
+
+        mode = preset.get('mode', 'custom')
+        self._build_detail(mode=mode)
+        self.name_var.set(preset.get('name', ''))
+        self.hotkey_var.set(preset.get('hotkey', ''))
+
+        if mode == 'arrange':
+            if hasattr(self, 'arr_app_var'):
+                self.arr_app_var.set(preset.get('app', ''))
+            if hasattr(self, 'arr_title_var'):
+                self.arr_title_var.set(preset.get('title') or '')
+            if hasattr(self, 'arr_dir_var'):
+                self.arr_dir_var.set(preset.get('arrange', 'horizontal'))
+        else:
             for win_cfg in preset.get('windows', []):
                 self._add_window_row(win_cfg)
 

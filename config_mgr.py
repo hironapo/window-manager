@@ -7,7 +7,35 @@ from pathlib import Path
 
 DEFAULT_CONFIG = {
     "popup_hotkey": "ctrl+alt+w",
-    "presets": []
+    "presets": [
+        {
+            "id": "default-wsl",
+            "name": "WSL 作業 (Terminal + Edge)",
+            "hotkey": "ctrl+alt+1",
+            "windows": [
+                {"app": "WindowsTerminal", "layout": {"x": 0.0, "y": 0.0, "w": 0.6, "h": 1.0}},
+                {"app": "msedge",          "layout": {"x": 0.6, "y": 0.0, "w": 0.4, "h": 1.0}},
+            ]
+        },
+        {
+            "id": "default-chrome",
+            "name": "Chrome 横並び 2分割",
+            "hotkey": "ctrl+alt+2",
+            "windows": [
+                {"app": "chrome", "layout": {"x": 0.0, "y": 0.0, "w": 0.5, "h": 1.0}},
+                {"app": "chrome", "layout": {"x": 0.5, "y": 0.0, "w": 0.5, "h": 1.0}},
+            ]
+        },
+        {
+            "id": "default-split",
+            "name": "左右 均等 2分割",
+            "hotkey": "ctrl+alt+3",
+            "windows": [
+                {"app": "chrome",          "layout": {"x": 0.0, "y": 0.0, "w": 0.5, "h": 1.0}},
+                {"app": "WindowsTerminal", "layout": {"x": 0.5, "y": 0.0, "w": 0.5, "h": 1.0}},
+            ]
+        },
+    ]
 }
 
 # プリセットの layout は画面比率（0.0〜1.0）
