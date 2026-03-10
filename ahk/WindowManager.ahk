@@ -15,11 +15,14 @@ SetWorkingDir(A_ScriptDir)
 ;    例） ^!1 = Ctrl+Alt+1
 ; ═══════════════════════════════════════════════════════════════
 
-global ConfigFile  := A_ScriptDir "\wm_config.ini"
+; ── グローバル変数 ───────────────────────────────────────────
+global ConfigFile  := A_AppData "\WindowManager\wm_config.ini"
 global Presets     := []
 global PopupHotkey := "^!w"
 global mgmtGui     := ""
 global selIdx      := 0
+; 管理GUIのコントロール参照（トップレベルハンドラから参照）
+global g_C         := Map()
 
 ; ─── 起動 ───────────────────────────────────────────────────
 LoadConfig()
@@ -34,16 +37,13 @@ return
 LoadConfig() {
     global ConfigFile, Presets, PopupHotkey
     Presets := []
-
     if !FileExist(ConfigFile) {
         WriteDefaultConfig()
         LoadConfig()
         return
     }
-
     try PopupHotkey := IniRead(ConfigFile, "General", "PopupHotkey", "^!w")
     count := Integer(IniRead(ConfigFile, "General", "PresetCount", "0"))
-
     loop count {
         sec := "Preset_" A_Index
         Presets.Push({
@@ -77,6 +77,7 @@ SaveConfig() {
 
 WriteDefaultConfig() {
     global ConfigFile
+    DirCreate(A_AppData "\WindowManager")
     IniWrite("^!w", ConfigFile, "General", "PopupHotkey")
     IniWrite(2,     ConfigFile, "General", "PresetCount")
 
@@ -105,11 +106,13 @@ RegisterHotkeys() {
     global Presets, PopupHotkey
     try Hotkey(PopupHotkey, ShowPopup)
     for p in Presets {
-        if p.Hotkey != "" {
-            pRef := p
-            try Hotkey(p.Hotkey, ((*) => ApplyPreset(pRef)))
-        }
+        if p.Hotkey != ""
+            try Hotkey(p.Hotkey, MakePresetHandler(p))
     }
+}
+
+MakePresetHandler(preset) {
+    return (*) => ApplyPreset(preset)
 }
 
 UnregisterHotkeys() {
@@ -133,10 +136,13 @@ ReloadHotkeys() {
 
 SetupTray() {
     A_TrayMenu.Delete()
-    A_TrayMenu.Add("管理メニュー", (*) => ShowManagement())
+    A_TrayMenu.Add("管理メニュー",       (*) => ShowManagement())
     A_TrayMenu.Add()
-    A_TrayMenu.Add("再起動",       (*) => Reload())
-    A_TrayMenu.Add("終了",         (*) => ExitApp())
+    A_TrayMenu.Add("設定をエクスポート", (*) => ExportConfig())
+    A_TrayMenu.Add("設定をインポート",   (*) => ImportConfig())
+    A_TrayMenu.Add()
+    A_TrayMenu.Add("再起動",             (*) => Reload())
+    A_TrayMenu.Add("終了",               (*) => ExitApp())
     A_TrayMenu.Default := "管理メニュー"
     TraySetIcon("shell32.dll", 238)
     A_IconTip := "Window Manager"
@@ -151,7 +157,6 @@ GetWorkArea() {
     return {x: wx, y: wy, w: wr - wx, h: wb - wy}
 }
 
-; 可視ウィンドウ全一覧を返す [{hwnd, title, exe}]
 GetAllWindows() {
     result := []
     for hwnd in WinGetList() {
@@ -166,37 +171,28 @@ GetAllWindows() {
     return result
 }
 
-; app名・titleフィルタで一致するウィンドウHWND配列を返す
 FindWindows(app, titleFilter := "") {
     appL   := StrLower(StrReplace(app, ".exe", ""))
     titleL := StrLower(titleFilter)
     result := []
-
     for w in GetAllWindows() {
-        exeL   := StrLower(StrReplace(w.exe, ".exe", ""))
-        tL     := StrLower(w.title)
-
-        ; アプリ一致: exe名 または タイトル部分一致
+        exeL     := StrLower(StrReplace(w.exe, ".exe", ""))
+        tL       := StrLower(w.title)
         appMatch := InStr(exeL, appL) || InStr(tL, appL)
         if !appMatch
             continue
-
-        ; タイトルフィルタ（空なら無条件通過）
         if titleL != "" && !InStr(tL, titleL)
             continue
-
         result.Push(w.hwnd)
     }
     return result
 }
 
-; HWNDリストを指定方向に等分割配置
 ArrangeWindows(hwnds, direction) {
     n := hwnds.Length
     if n = 0
         return
     wa := GetWorkArea()
-
     if direction = "horizontal" {
         w := wa.w // n
         i := 0
@@ -221,27 +217,23 @@ ArrangeWindows(hwnds, direction) {
         i    := 0
         for hwnd in hwnds {
             WinRestore("ahk_id " hwnd)
-            WinMove(wa.x + Mod(i, cols)*tw, wa.y + (i // cols)*th, tw, th, "ahk_id " hwnd)
+            WinMove(wa.x + Mod(i,cols)*tw, wa.y + (i//cols)*th, tw, th, "ahk_id " hwnd)
             i++
         }
     }
 }
 
-; プリセット適用
 ApplyPreset(preset) {
     if preset.Mode = "arrange" {
         hwnds := FindWindows(preset.App, preset.Title)
         ArrangeWindows(hwnds, preset.Arrange)
         return
     }
-
-    ; カスタムモード: "app,title,x,y,w,h;..." 形式
     if preset.Windows = ""
         return
     wa   := GetWorkArea()
     pool := Map()
     cur  := Map()
-
     for def in StrSplit(preset.Windows, ";") {
         p := StrSplit(def, ",")
         if p.Length < 6
@@ -273,152 +265,198 @@ ApplyPreset(preset) {
 }
 
 ; ═══════════════════════════════════════════════════════════════
-;  POPUP MENU（画面上部中央）
+;  POPUP MENU
 ; ═══════════════════════════════════════════════════════════════
 
 ShowPopup(*) {
     global Presets
     if Presets.Length = 0 {
-        MsgBox("プリセットがありません。`nトレイアイコン右クリック → 管理メニューから追加してください。",
+        MsgBox("プリセットがありません。`nトレイ右クリック → 管理メニューから追加してください。",
                "Window Manager", "0x40")
         return
     }
-
     m := Menu()
     for p in Presets {
         label := p.Name
         if p.Hotkey != ""
             label .= "`t" p.Hotkey
-        pRef := p
-        m.Add(label, ((*) => ApplyPreset(pRef)))
+        m.Add(label, MakePresetHandler(p))
     }
     m.Add()
     m.Add("管理メニュー", (*) => ShowManagement())
-
-    ; 画面上部中央に表示（Windowsのメニューはカーソル位置を基準にするので調整）
-    x := A_ScreenWidth  // 2 - 120
+    x := A_ScreenWidth // 2 - 120
     y := Integer(A_ScreenHeight * 0.12)
     m.Show(x, y)
 }
 
 ; ═══════════════════════════════════════════════════════════════
 ;  MANAGEMENT GUI
+;  ルール: ShowManagement 内では OnEvent にトップレベル関数名のみ渡す
+;          ラムダ・クロージャは一切使わない
+;          コントロール参照は g_C (Map) 経由で共有
 ; ═══════════════════════════════════════════════════════════════
 
 ShowManagement(*) {
-    global mgmtGui, Presets, PopupHotkey, selIdx
+    global mgmtGui, Presets, PopupHotkey, selIdx, g_C
 
     if IsObject(mgmtGui) {
-        try { mgmtGui.Show() ; return }
+        try mgmtGui.Show()
+        return
     }
 
     selIdx := 0
-    mgmtGui := Gui("+Resize +MinSize680x460", "ウィンドウ配置プリセット管理")
+    SW := 210
+
+    mgmtGui := Gui("+Resize +MinSize800x510", "Window Manager")
     mgmtGui.BackColor := "FFFFFF"
     mgmtGui.SetFont("s10", "Meiryo")
-    mgmtGui.OnEvent("Close", (*) => (mgmtGui := ""))
+    mgmtGui.OnEvent("Close", MgmtCloseEvt)
 
-    ; ── ヘッダー ────────────────────────────
-    mgmtGui.Add("Text", "x0 y0 w800 h44 0x0E BackgroundColor003366", "")  ; 塗り背景
-    mgmtGui.Add("Text", "x12 y12 cWhite BackgroundColor003366",
-                "ウィンドウ配置プリセット管理")
-    mgmtGui.Add("Text", "x350 y14 cWhite BackgroundColor003366", "ポップアップキー：")
-    edtPopupHk := mgmtGui.Add("Edit", "x488 y11 w130 BackgroundColor003366 cWhite",
-                               PopupHotkey)
-    mgmtGui.Add("Button", "x624 y9 w58 h26", "適用").OnEvent("Click", (*) {
-        global PopupHotkey
-        PopupHotkey := edtPopupHk.Value
-        SaveConfig()
-        ReloadHotkeys()
-        ToolTip("ポップアップキー: " PopupHotkey)
-        SetTimer(() => ToolTip(), -2000)
-    })
+    ; ── サイドバー背景
+    mgmtGui.Add("Text", "x0 y0 w210 h510 0x0E Background003366", "")
 
-    ; ── 左：プリセット一覧 ──────────────────
-    mgmtGui.Add("Text", "x10 y54 w170", "プリセット一覧")
-    lbPresets := mgmtGui.Add("ListBox", "x10 y72 w170 h280 vPresetLB", [])
-    RefreshPresetList(lbPresets)
+    ; ── ロゴ
+    mgmtGui.SetFont("s12 bold", "Meiryo")
+    mgmtGui.Add("Text", "x0 y0 w210 h54 0x201 Background003366 cWhite", "Window Manager")
+    mgmtGui.SetFont("s10", "Meiryo")
 
-    mgmtGui.Add("Button", "x10 y360 w80 h26",  "＋ 新規").OnEvent("Click",
-        (*) => OnNew(lbPresets, edtName, edtHk, edtApp, edtTitle, rdoH, rdoV, rdoT))
-    mgmtGui.Add("Button", "x96 y360 w84 h26",  "削除").OnEvent("Click",
-        (*) => OnDelete(lbPresets, edtName))
+    mgmtGui.Add("Text", "x0 y54 w210 h2 Background0055AA", "")
+    mgmtGui.Add("Text", "x14 y64 Background003366 cWhite", "プリセット")
 
-    ; ── 右：詳細 ────────────────────────────
-    mgmtGui.Add("Text", "x196 y54", "プリセット詳細")
+    ; ── プリセット ListView
+    lv := mgmtGui.Add("ListView", "x0 y84 w210 h316 -Hdr -Multi NoSort Background003366 cWhite", ["名前"])
+    lv.ModifyCol(1, 206)
+    SendMessage(0x1024, 0xFFFFFF, 0, lv)
+    SendMessage(0x1025, 0x663300, 0, lv)
+    SendMessage(0x1001, 0x663300, 0, lv)
+    RefreshPresetList(lv)
 
-    mgmtGui.Add("Text",  "x196 y74 w90",  "名前：")
-    edtName := mgmtGui.Add("Edit", "x290 y72 w390 vPresetName")
+    mgmtGui.Add("Text",   "x0 y406 w210 h1 Background0055AA", "")
+    mgmtGui.Add("Button", "x12 y416 w88 h28",  "+ 新規").OnEvent("Click", BtnNewEvt)
+    mgmtGui.Add("Button", "x106 y416 w84 h28", "削除").OnEvent("Click",   BtnDeleteEvt)
 
-    mgmtGui.Add("Text",  "x196 y106 w90", "ホットキー：")
-    edtHk := mgmtGui.Add("Edit", "x290 y104 w160 vPresetHk")
-    mgmtGui.Add("Text",  "x456 y107 w220 cGray", "例: ^!1 = Ctrl+Alt+1  ^+F1 = Ctrl+Shift+F1")
+    ; ── サイドバー右端線
+    mgmtGui.Add("Text", "x210 y0 w2 h510 Background0055AA", "")
 
-    ; モード選択
-    rdoArr := mgmtGui.Add("Radio", "x196 y138 vModeArr Checked", "アレンジ（自動タイル）")
-    mgmtGui.Add("Radio",  "x390 y138 vModeCus",  "カスタム（位置指定）")
+    ; ── 右コンテンツ
+    CX := 226
+    CW := 560
+    LW := 106
+    IX := CX + LW
 
-    ; ── アレンジパネル ───────────────────────
-    mgmtGui.Add("GroupBox", "x196 y160 w490 h148", "アレンジ設定")
+    mgmtGui.Add("Text", "x" CX " y18 w" LW, "ポップアップ：")
+    eHk := mgmtGui.Add("Edit", "x" IX " y16 w130", PopupHotkey)
+    mgmtGui.Add("Button", "x" (IX+136) " y14 w52 h26", "適用").OnEvent("Click", SaveHkEvt)
 
-    mgmtGui.Add("Text", "x210 y182 w116", "アプリ名：")
-    edtApp   := mgmtGui.Add("Edit",   "x330 y180 w200 vArrApp")
-    mgmtGui.Add("Button", "x536 y178 w60 h24", "選択...").OnEvent("Click",
-        (*) => OnPickApp(edtApp))
+    mgmtGui.Add("Text", "x" CX " y50 w" CW " h1 BackgroundE8F4FC", "")
+    mgmtGui.Add("Text", "x" CX " y51 w" CW " h1 Background0055AA", "")
 
-    mgmtGui.Add("Text", "x210 y214 w116", "タイトル絞り込み：")
-    edtTitle := mgmtGui.Add("Edit",   "x330 y212 w200 vArrTitle")
-    mgmtGui.Add("Text", "x536 y215 w150 cGray", "例: wsl （空欄=全て）")
+    mgmtGui.SetFont("s10 bold", "Meiryo")
+    mgmtGui.Add("Text", "x" CX " y62", "プリセット詳細")
+    mgmtGui.SetFont("s10", "Meiryo")
 
-    mgmtGui.Add("Text", "x210 y248 w116", "並べ方：")
-    rdoH := mgmtGui.Add("Radio", "x330 y248 vDirH Checked", "横並び")
-    rdoV := mgmtGui.Add("Radio", "x412 y248 vDirV",         "縦並び")
-    rdoT := mgmtGui.Add("Radio", "x494 y248 vDirT",         "タイル(格子)")
+    mgmtGui.Add("Text", "x" CX " y94 w" LW " Right", "名前：")
+    eName := mgmtGui.Add("Edit", "x" IX " y92 w" (CW-LW-4), "")
 
-    mgmtGui.Add("Text", "x210 y280 w470 cGray",
-                "実行時に一致する全ウィンドウを自動で等分割配置します。")
+    mgmtGui.Add("Text", "x" CX " y126 w" LW " Right", "ホットキー：")
+    eHotkey := mgmtGui.Add("Edit", "x" IX " y124 w150", "")
+    mgmtGui.Add("Text", "x" (IX+156) " y127 cGray", "例: ^!1 = Ctrl+Alt+1   # = Win")
 
-    ; 保存ボタン
-    mgmtGui.Add("Button", "x560 y420 w118 h32", "保存").OnEvent("Click",
-        (*) => OnSave(lbPresets, edtName, edtHk, edtApp, edtTitle, rdoV, rdoT))
+    mgmtGui.Add("Text", "x" CX " y160 w" LW " Right", "モード：")
+    mgmtGui.Add("Radio", "x" IX " y160 Checked", "自動タイル")
+    mgmtGui.Add("Radio", "x" (IX+92) " y160", "手動配置")
 
-    ; 一覧選択イベント
-    lbPresets.OnEvent("Change", (*) {
-        global selIdx, Presets
-        idx := lbPresets.Value
-        if idx = 0 || idx > Presets.Length
-            return
-        selIdx := idx
-        p := Presets[idx]
-        edtName.Value  := p.Name
-        edtHk.Value    := p.Hotkey
-        edtApp.Value   := p.App
-        edtTitle.Value := p.Title
-        rdoH.Value := 1
-        if p.Arrange = "vertical"
-            rdoV.Value := 1
-        else if p.Arrange = "tile"
-            rdoT.Value := 1
-    })
+    GBX := CX - 4
+    GBW := CW + 4
+    mgmtGui.Add("GroupBox", "x" GBX " y182 w" GBW " h158", "アレンジ設定")
 
-    mgmtGui.Show("w700 h460")
+    mgmtGui.Add("Text", "x" (GBX+16) " y204 w" LW " Right", "アプリ名：")
+    eApp := mgmtGui.Add("Edit", "x" (GBX+LW+16) " y202 w196", "")
+    mgmtGui.Add("Button", "x" (GBX+LW+218) " y200 w60 h24", "選択...").OnEvent("Click", BtnPickAppEvt)
+
+    mgmtGui.Add("Text", "x" (GBX+16) " y236 w" LW " Right", "タイトル絞込：")
+    eTitle := mgmtGui.Add("Edit", "x" (GBX+LW+16) " y234 w196", "")
+    mgmtGui.Add("Text", "x" (GBX+LW+218) " y237 cGray", "例: wsl  (空=全て)")
+
+    mgmtGui.Add("Text", "x" (GBX+16) " y270 w" LW " Right", "並べ方：")
+    rH := mgmtGui.Add("Radio", "x" (GBX+LW+16) " y270 Checked", "横並び")
+    rV := mgmtGui.Add("Radio", "x" (GBX+LW+92) " y270", "縦並び")
+    rT := mgmtGui.Add("Radio", "x" (GBX+LW+168) " y270", "タイル")
+
+    mgmtGui.Add("Text", "x" (GBX+16) " y304 w" (GBW-20) " cGray",
+        "実行時に一致する全ウィンドウを自動で等分割配置します。")
+
+    ; ── フッター
+    mgmtGui.Add("Text",   "x0 y458 w800 h2 BackgroundE8F4FC", "")
+    mgmtGui.Add("Button", "x226 y468 w108 h34", "インポート").OnEvent("Click",  BtnImportEvt)
+    mgmtGui.Add("Button", "x340 y468 w108 h34", "エクスポート").OnEvent("Click", BtnExportEvt)
+    mgmtGui.Add("Button", "x648 y468 w128 h34", "保存").OnEvent("Click",         BtnSaveEvt)
+
+    ; ── コントロール参照を g_C に保存
+    g_C["lv"]     := lv
+    g_C["eName"]  := eName
+    g_C["eHotkey"]:= eHotkey
+    g_C["eHk"]    := eHk
+    g_C["eApp"]   := eApp
+    g_C["eTitle"] := eTitle
+    g_C["rH"]     := rH
+    g_C["rV"]     := rV
+    g_C["rT"]     := rT
+
+    lv.OnEvent("ItemSelect", LvSelectEvt)
+
+    mgmtGui.Show("w800 h510")
 }
 
-; ── 管理GUI イベントハンドラ ─────────────────────────────────
+; ═══════════════════════════════════════════════════════════════
+;  管理GUI トップレベルイベントハンドラ
+;  ※ ラムダ・クロージャを使わず関数名で OnEvent に登録
+; ═══════════════════════════════════════════════════════════════
 
-OnNew(lb, edtName, edtHk, edtApp, edtTitle, rdoH, rdoV, rdoT) {
-    global selIdx
+MgmtCloseEvt(*) {
+    global mgmtGui
+    mgmtGui := ""
+}
+
+LvSelectEvt(*) {
+    global selIdx, Presets, g_C
+    idx := g_C["lv"].GetNext(0, "Selected")
+    if idx < 1 || idx > Presets.Length
+        return
+    selIdx := idx
+    p := Presets[idx]
+    g_C["eName"].Value   := p.Name
+    g_C["eHotkey"].Value := p.Hotkey
+    g_C["eApp"].Value    := p.App
+    g_C["eTitle"].Value  := p.Title
+    g_C["rH"].Value := 1
+    g_C["rV"].Value := (p.Arrange = "vertical") ? 1 : 0
+    g_C["rT"].Value := (p.Arrange = "tile")     ? 1 : 0
+}
+
+SaveHkEvt(*) {
+    global PopupHotkey, g_C
+    PopupHotkey := g_C["eHk"].Value
+    SaveConfig()
+    ReloadHotkeys()
+    ToolTip("ポップアップキー: " PopupHotkey)
+    SetTimer(() => ToolTip(), -2000)
+}
+
+BtnNewEvt(*) {
+    global selIdx, g_C
     selIdx := 0
-    lb.Value := 0
-    edtName.Value  := ""
-    edtHk.Value    := ""
-    edtApp.Value   := ""
-    edtTitle.Value := ""
-    rdoH.Value := 1
+    loop g_C["lv"].GetCount()
+        g_C["lv"].Modify(A_Index, "-Select")
+    g_C["eName"].Value   := ""
+    g_C["eHotkey"].Value := ""
+    g_C["eApp"].Value    := ""
+    g_C["eTitle"].Value  := ""
+    g_C["rH"].Value := 1
 }
 
-OnDelete(lb, edtName) {
-    global selIdx, Presets
+BtnDeleteEvt(*) {
+    global selIdx, Presets, g_C
     if selIdx = 0
         return
     p := Presets[selIdx]
@@ -428,98 +466,149 @@ OnDelete(lb, edtName) {
     selIdx := 0
     SaveConfig()
     ReloadHotkeys()
-    RefreshPresetList(lb)
-    edtName.Value := ""
+    RefreshPresetList(g_C["lv"])
+    g_C["eName"].Value := ""
 }
 
-OnSave(lb, edtName, edtHk, edtApp, edtTitle, rdoV, rdoT) {
-    global selIdx, Presets
-    name := Trim(edtName.Value)
+BtnSaveEvt(*) {
+    global selIdx, Presets, g_C
+    name := Trim(g_C["eName"].Value)
     if name = "" {
         MsgBox("名前を入力してください", "エラー", "0x10")
         return
     }
     dir := "horizontal"
-    if rdoV.Value
+    if g_C["rV"].Value
         dir := "vertical"
-    else if rdoT.Value
+    if g_C["rT"].Value
         dir := "tile"
-
     p := {
         Name:    name,
-        Hotkey:  Trim(edtHk.Value),
+        Hotkey:  Trim(g_C["eHotkey"].Value),
         Mode:    "arrange",
-        App:     Trim(edtApp.Value),
-        Title:   Trim(edtTitle.Value),
+        App:     Trim(g_C["eApp"].Value),
+        Title:   Trim(g_C["eTitle"].Value),
         Arrange: dir,
         Windows: "",
     }
-
     if selIdx > 0
         Presets[selIdx] := p
     else
         Presets.Push(p)
-
     SaveConfig()
     ReloadHotkeys()
-    RefreshPresetList(lb)
+    RefreshPresetList(g_C["lv"])
     ToolTip("「" name "」を保存しました")
     SetTimer(() => ToolTip(), -2000)
 }
 
-OnPickApp(edtApp) {
-    global mgmtGui
+BtnPickAppEvt(*) {
+    global mgmtGui, g_C
     result := PickWindow(mgmtGui)
     if result != ""
-        edtApp.Value := result
+        g_C["eApp"].Value := result
 }
 
-RefreshPresetList(lb) {
+BtnImportEvt(*) {
+    ImportConfig()
+}
+
+BtnExportEvt(*) {
+    ExportConfig()
+}
+
+RefreshPresetList(lv) {
     global Presets
-    lb.Delete()
+    lv.Delete()
     for p in Presets
-        lb.Add([p.Name])
+        lv.Add(, p.Name)
 }
 
-; ── ウィンドウ選択ダイアログ（モーダル）────────────────────
-PickWindow(ownerGui) {
-    ; クロージャ間でリザルトを共有するために Map を使用
-    shared := Map("result", "")
+; ═══════════════════════════════════════════════════════════════
+;  設定エクスポート・インポート
+; ═══════════════════════════════════════════════════════════════
 
-    dlg := Gui("+Owner" ownerGui.Hwnd " +Modal", "ウィンドウを選択")
+ExportConfig() {
+    global ConfigFile
+    dest := FileSelect("S16", A_Desktop "\wm_backup.ini",
+        "設定ファイルをエクスポート", "設定ファイル (*.ini)")
+    if dest = ""
+        return
+    if !FileCopy(ConfigFile, dest, 1) {
+        MsgBox("エクスポートに失敗しました。", "エラー", "0x10")
+        return
+    }
+    ToolTip("エクスポート完了: " dest)
+    SetTimer(() => ToolTip(), -3000)
+}
+
+ImportConfig() {
+    global ConfigFile
+    src := FileSelect(1, A_Desktop, "設定ファイルをインポート", "設定ファイル (*.ini)")
+    if src = ""
+        return
+    if MsgBox("現在の設定を上書きしてインポートしますか？`n(スクリプトが再起動されます)",
+              "インポート確認", "0x24") != "Yes"
+        return
+    if !FileCopy(src, ConfigFile, 1) {
+        MsgBox("インポートに失敗しました。", "エラー", "0x10")
+        return
+    }
+    Reload()
+}
+
+; ═══════════════════════════════════════════════════════════════
+;  ウィンドウ選択ダイアログ
+; ═══════════════════════════════════════════════════════════════
+
+PickWindow(ownerGui) {
+    global g_C
+    shared   := Map("result", "")
+    dlg      := Gui("+Owner" ownerGui.Hwnd " +Modal", "ウィンドウを選択")
     dlg.BackColor := "FFFFFF"
     dlg.SetFont("s10", "Meiryo")
     dlg.OnEvent("Close", (*) => 0)
-
     dlg.Add("Text", "x10 y10", "実行中ウィンドウ（ダブルクリックで選択）")
 
-    wins    := GetAllWindows()
-    items   := []
+    wins     := GetAllWindows()
+    items    := []
     exeBases := []
     for w in wins {
-        exeBase := StrReplace(w.exe, ".exe", "")
-        items.Push(exeBase "  —  " SubStr(w.title, 1, 52))
-        exeBases.Push(exeBase)
+        eb := StrReplace(w.exe, ".exe", "")
+        items.Push(eb "  —  " SubStr(w.title, 1, 52))
+        exeBases.Push(eb)
     }
 
     lb := dlg.Add("ListBox", "x10 y32 w480 h260", items)
 
-    DoSelect := (*) {
-        idx := lb.Value
-        if idx > 0 && idx <= exeBases.Length {
-            shared["result"] := exeBases[idx]
-            dlg.Destroy()
-        }
-    }
+    g_C["pick_lb"]       := lb
+    g_C["pick_exeBases"] := exeBases
+    g_C["pick_shared"]   := shared
+    g_C["pick_dlg"]      := dlg
 
-    lb.OnEvent("DoubleClick", DoSelect)
-    dlg.Add("Button", "x296 y302 w94 h28", "選択").OnEvent("Click", DoSelect)
-    dlg.Add("Button", "x396 y302 w94 h28", "キャンセル").OnEvent("Click",
-            (*) => dlg.Destroy())
+    lb.OnEvent("DoubleClick", PickSelectEvt)
+    dlg.Add("Button", "x296 y302 w94 h28", "選択").OnEvent("Click",     PickSelectEvt)
+    dlg.Add("Button", "x396 y302 w94 h28", "キャンセル").OnEvent("Click", PickCancelEvt)
 
     dlg.Show("w500 h340")
-
-    ; ダイアログが閉じるまで待機
     WinWaitClose("ahk_id " dlg.Hwnd)
     return shared["result"]
+}
+
+PickSelectEvt(*) {
+    global g_C
+    lb       := g_C["pick_lb"]
+    exeBases := g_C["pick_exeBases"]
+    shared   := g_C["pick_shared"]
+    dlg      := g_C["pick_dlg"]
+    idx := lb.Value
+    if idx > 0 && idx <= exeBases.Length {
+        shared["result"] := exeBases[idx]
+        dlg.Destroy()
+    }
+}
+
+PickCancelEvt(*) {
+    global g_C
+    g_C["pick_dlg"].Destroy()
 }

@@ -1,20 +1,21 @@
 # Window Manager 仕様書
 
-バージョン: 1.0.0
+バージョン: 2.0.0
 対象OS: Windows 11
-言語: Python 3.8+
+言語: Python 3.8+ / AutoHotkey v2
 
 ---
 
 ## 1. 概要
 
-本ツールはWindows 11上で動作するウィンドウ配置管理デーモンです。
-グローバルホットキーのリッスンとtkinterベースのGUIを組み合わせ、
-登録されたプリセットに従ってウィンドウを自動配置します。
+Windows 11 上で動作するウィンドウ配置管理ツール。
+グローバルホットキーのリッスンと GUI を組み合わせ、登録されたプリセットに従ってウィンドウを自動配置します。
+
+Python 版と AutoHotkey 版の 2 実装を提供します。
 
 ---
 
-## 2. アーキテクチャ
+## 2. Python 版アーキテクチャ
 
 ### 2.1 コンポーネント構成
 
@@ -23,16 +24,17 @@
 │  main.py  WindowManagerApp                        │
 │  ├── ConfigManager     設定読み書き（JSON）        │
 │  ├── keyboard daemon   グローバルホットキー監視    │
-│  ├── PopupMenu         ポップアップUI              │
-│  └── ManagementWindow  管理UI                     │
+│  ├── PopupMenu         ポップアップ UI             │
+│  └── ManagementWindow  管理 UI                    │
 └──────────────────────────────────────────────────┘
           ↓ apply_preset()
 ┌──────────────────────────────────────────────────┐
 │  window_mgr.py                                    │
-│  ├── get_work_area()   作業領域取得（SPI_GETWORKAREA）│
-│  ├── get_all_windows() EnumWindows でウィンドウ列挙│
-│  ├── find_window_by_app() exe名/タイトルで検索    │
-│  └── move_window()     SetWindowPos で配置        │
+│  ├── get_work_area()        作業領域取得           │
+│  ├── get_all_windows()      ウィンドウ列挙         │
+│  ├── find_all_windows_by_app() 複数ウィンドウ検索  │
+│  ├── arrange_windows()      等分割配置             │
+│  └── move_window()          SetWindowPos で配置   │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -48,264 +50,226 @@ tkinter のスレッドセーフ制約を守ります。
 
 ---
 
-## 3. モジュール仕様
+## 3. Python 版モジュール仕様
 
 ### 3.1 config_mgr.py — ConfigManager
 
-**責務：** `config.json` の読み書きとプリセットのCRUD
-
-**ファイルパス：** `main.py` と同ディレクトリの `config.json`
+**責務：** `config.json` の読み書きとプリセットの CRUD
 
 #### メソッド
 
 | メソッド | 引数 | 戻り値 | 説明 |
 |---------|------|--------|------|
-| `__init__()` | — | — | 設定ロード、なければデフォルト生成 |
 | `get(key, default)` | key: str | Any | 設定値取得 |
 | `set(key, value)` | key: str, value: Any | — | 設定値保存（即座に書き込み） |
 | `get_presets()` | — | list[dict] | 全プリセット取得 |
-| `get_preset(id)` | id: str | dict \| None | IDでプリセット取得 |
-| `add_preset(preset)` | preset: dict | str | 追加（UUIDをidとして付与） |
+| `add_preset(preset)` | preset: dict | str | 追加（UUID を id として付与） |
 | `update_preset(id, updates)` | id: str, updates: dict | bool | 部分更新 |
 | `delete_preset(id)` | id: str | — | 削除 |
 
 #### コールバック
 
 ```python
-config.on_change = callable  # 保存のたびに呼ばれる
+config.on_change = callable  # 保存のたびに呼ばれる → ホットキー再登録に使用
 ```
-
-#### データスキーマ
-
-```json
-{
-  "popup_hotkey": "ctrl+alt+w",
-  "presets": [
-    {
-      "id": "<uuid4>",
-      "name": "<string>",
-      "hotkey": "<string>",
-      "windows": [
-        {
-          "app": "<string>",
-          "layout": {
-            "x": "<float 0.0-1.0>",
-            "y": "<float 0.0-1.0>",
-            "w": "<float 0.0-1.0>",
-            "h": "<float 0.0-1.0>"
-          }
-        }
-      ]
-    }
-  ]
-}
-```
-
----
 
 ### 3.2 window_mgr.py — ウィンドウ操作
 
-**責務：** Win32 API を通じたウィンドウ検出・移動
-
 #### 関数
 
-| 関数 | 引数 | 戻り値 | 説明 |
-|------|------|--------|------|
-| `get_work_area()` | — | (x, y, w, h): tuple[int] | タスクバー除外の作業領域（px） |
-| `get_all_windows()` | — | list[dict] | 可視ウィンドウ一覧 |
-| `find_window_by_app(app_name)` | app_name: str | int \| None | exe名/タイトル部分一致でHWND返却 |
-| `move_window(hwnd, x, y, w, h)` | hwnd: int, xywh: int | — | 最大化解除→移動・リサイズ |
-| `apply_preset(preset)` | preset: dict | list[tuple] | プリセット全窓を適用、結果リスト返却 |
-| `capture_current_layout()` | — | list[dict] | 現在のウィンドウ位置を比率で取得 |
+| 関数 | 説明 |
+|------|------|
+| `get_work_area()` | SPI_GETWORKAREA でタスクバー除外の作業領域を返す |
+| `get_all_windows()` | EnumWindows で可視ウィンドウ一覧を返す |
+| `find_all_windows_by_app(app, title_filter)` | 複数ウィンドウ対応。title_filter で絞り込み可 |
+| `arrange_windows(hwnds, direction)` | horizontal / vertical / tile に等分割配置 |
+| `apply_preset(preset)` | mode='arrange' または mode='custom' でプリセット適用 |
+| `capture_current_layout()` | 現在のウィンドウ位置を比率で取得 |
 
-#### ウィンドウ検索ロジック
+#### プリセットモード
 
-```python
-# app_name を小文字化・.exe 除去して比較
-app_lower = app_name.lower().replace('.exe', '')
-for w in get_all_windows():
-    if app_lower in w['exe'].lower().replace('.exe', ''):
-        return w['hwnd']  # exe名に含まれれば優先
-    if app_lower in w['title'].lower():
-        return w['hwnd']  # タイトルにも照合
-```
+| モード | 動作 |
+|--------|------|
+| `arrange` | `app` + `title` に一致する全ウィンドウを `arrange` 方向に自動等分割 |
+| `custom` | `windows` 配列の各エントリを x/y/w/h 比率で個別配置 |
 
 #### 座標変換
 
 ```
-画面比率 → ピクセル座標
+比率 → ピクセル座標
   px_x = work_x + layout.x × work_w
   px_y = work_y + layout.y × work_h
   px_w = layout.w × work_w
   px_h = layout.h × work_h
 ```
 
-使用Win32 API:
+使用 Win32 API:
 - `SystemParametersInfoW(SPI_GETWORKAREA)` — 作業領域取得
-- `EnumWindows` — ウィンドウ列挙
-- `GetWindowPlacement` — 最大化状態確認
-- `ShowWindow(SW_RESTORE)` — 最大化解除
+- `EnumWindows` + `GetWindowThreadProcessId` + `psutil.Process` — exe 名取得
+- `GetWindowPlacement` / `ShowWindow(SW_RESTORE)` — 最大化解除
 - `SetWindowPos` — 位置・サイズ設定
 
 ---
 
-### 3.3 ui_popup.py — PopupMenu
+## 4. AHK 版アーキテクチャ
 
-**責務：** ホットキーで呼び出すポップアップ選択メニュー
+### 4.1 ファイル構成
 
-#### 初期化
-
-```python
-PopupMenu(root, config, on_manage=None)
+```
+ahk/
+├── WindowManager.ahk   # スクリプト本体（単一ファイル）
+└── README.md
 ```
 
-| 引数 | 型 | 説明 |
-|------|----|------|
-| root | tk.Tk | ルートウィジェット |
-| config | ConfigManager | 設定参照 |
-| on_manage | callable \| None | 管理メニューを開くコールバック |
+設定ファイル保存先: `%APPDATA%\WindowManager\wm_config.ini`
 
-#### メソッド
+### 4.2 主要関数
 
-| メソッド | 説明 |
-|---------|------|
-| `show()` | ポップアップを画面中央に表示 |
-| `close()` | ポップアップを閉じる |
-
-#### UI仕様
-
-| 要素 | 仕様 |
+| 関数 | 説明 |
 |------|------|
-| ウィンドウ装飾 | なし（`overrideredirect=True`） |
-| 常時最前面 | `attributes('-topmost', True)` |
-| 表示位置 | 画面中央 |
-| キーバインド | `ESC` → 閉じる、`FocusOut` → 閉じる、`1`〜`9` → プリセット実行 |
-| ホバー効果 | 行の背景色を LIGHT_BLUE に変更 |
+| `LoadConfig()` | INI ファイルを読み込み Presets 配列を構築 |
+| `SaveConfig()` | Presets 配列を INI ファイルに書き込み |
+| `RegisterHotkeys()` | PopupHotkey とプリセットキーを登録 |
+| `MakePresetHandler(preset)` | ループキャプチャ問題を回避するファクトリ関数 |
+| `FindWindows(app, titleFilter)` | exe 名/タイトルで一致するウィンドウ HWND 配列を返す |
+| `ArrangeWindows(hwnds, direction)` | horizontal / vertical / tile に等分割配置 |
+| `ApplyPreset(preset)` | arrange / custom モードでプリセット適用 |
+| `ShowPopup()` | 画面上部中央にポップアップメニュー表示 |
+| `ShowManagement()` | モダン管理 GUI を表示 |
+| `ExportConfig()` | 設定を任意パスの INI ファイルにコピー |
+| `ImportConfig()` | 外部 INI ファイルをインポートして Reload() |
 
-#### 配色
+### 4.3 GUI イベントハンドラ（トップレベル関数）
 
-| 要素 | 色 |
-|------|----|
-| タイトルバー | #003366（ダークネイビー） |
-| 背景 | #FFFFFF（白） |
-| フッター | #E8F4FC（ライトブルー） |
-| 管理ボタン | #0055AA（ロイヤルブルー） |
-| 番号バッジ | #003366 背景・白文字 |
-| フォント | Meiryo |
+| 関数 | 登録先 |
+|------|--------|
+| `MgmtCloseEvt` | 管理 GUI Close |
+| `LvSelectEvt` | ListView ItemSelect |
+| `SaveHkEvt` | ポップアップキー「適用」ボタン |
+| `BtnNewEvt` | 「+ 新規」ボタン |
+| `BtnDeleteEvt` | 「削除」ボタン |
+| `BtnSaveEvt` | 「保存」ボタン |
+| `BtnPickAppEvt` | 「選択...」ボタン |
+| `PickSelectEvt` | PickWindow ダイアログ「選択」 |
+| `PickCancelEvt` | PickWindow ダイアログ「キャンセル」 |
 
----
-
-### 3.4 ui_management.py — ManagementWindow
-
-**責務：** プリセットのCRUD管理UI
-
-#### 初期化
-
-```python
-ManagementWindow(root, config)
-```
-
-#### メソッド
-
-| メソッド | 説明 |
-|---------|------|
-| `show()` | 管理ウィンドウを表示（既に開いていれば前面に） |
-
-#### UI構成
-
-```
-┌─────────────────────────────────────────────────────┐
-│ ヘッダー（タイトル + ポップアップホットキー設定）    │
-├─────────────────┬───────────────────────────────────┤
-│ プリセット一覧  │ プリセット詳細                    │
-│                 │  名前・ホットキー入力              │
-│ [＋新規][削除]  │  ウィンドウ配置テーブル            │
-│                 │  [＋ウィンドウ追加][現在取り込む]  │
-│                 │                         [保存]    │
-└─────────────────┴───────────────────────────────────┘
-```
-
-#### ウィンドウ行の入力項目
-
-| 列 | 型 | 説明 |
-|----|----|------|
-| アプリ名 | テキスト | exe名またはウィンドウタイトル部分文字列 |
-| クイックレイアウト | ドロップダウン | 選択で X/Y/W/H を自動入力 |
-| X | float 0.0-1.0 | 作業領域左端からの比率 |
-| Y | float 0.0-1.0 | 作業領域上端からの比率 |
-| W | float 0.0-1.0 | 作業領域幅に対するウィンドウ幅比率 |
-| H | float 0.0-1.0 | 作業領域高さに対するウィンドウ高さ比率 |
-
-#### クイックレイアウト一覧
-
-| 名前 | x | y | w | h |
-|------|---|---|---|---|
-| 左半分 | 0.0 | 0.0 | 0.5 | 1.0 |
-| 右半分 | 0.5 | 0.0 | 0.5 | 1.0 |
-| 上半分 | 0.0 | 0.0 | 1.0 | 0.5 |
-| 下半分 | 0.0 | 0.5 | 1.0 | 0.5 |
-| 左1/3 | 0.0 | 0.0 | 0.33 | 1.0 |
-| 中央1/3 | 0.33 | 0.0 | 0.34 | 1.0 |
-| 右1/3 | 0.67 | 0.0 | 0.33 | 1.0 |
-| 左2/3 | 0.0 | 0.0 | 0.67 | 1.0 |
-| 右2/3 | 0.33 | 0.0 | 0.67 | 1.0 |
-| 左上1/4 | 0.0 | 0.0 | 0.5 | 0.5 |
-| 右上1/4 | 0.5 | 0.0 | 0.5 | 0.5 |
-| 左下1/4 | 0.0 | 0.5 | 0.5 | 0.5 |
-| 右下1/4 | 0.5 | 0.5 | 0.5 | 0.5 |
-| 全画面 | 0.0 | 0.0 | 1.0 | 1.0 |
-
-#### ホットキーキャプチャ
-
-管理UI内のホットキー入力欄にフォーカスした状態でキーを押すと、
-`Ctrl/Shift/Alt + キー` を自動的に `ctrl+shift+x` 形式で入力します。
+コントロール参照はグローバル Map `g_C` 経由で共有します。
 
 ---
 
-## 4. ホットキーシステム
+## 5. AHK v2 実装における注意点
 
-### 4.1 登録フロー
+### 5.1 ブロッククロージャは関数内で使用不可
 
+AHK v2 では `(*) { ... }` 形式のブロッククロージャを**関数本体の内側で定義するとパースエラーになる**ことがある。
+
+```ahk
+; NG: 関数内でのブロッククロージャ
+MyFunc() {
+    handler := (*) {   ; ← パースエラーになる場合がある
+        DoSomething()
+    }
+    ctrl.OnEvent("Click", handler)
+}
+
+; OK: トップレベルで定義
+MyHandler(*) {
+    DoSomething()
+}
+MyFunc() {
+    ctrl.OnEvent("Click", MyHandler)
+}
 ```
-起動
-  │
-  ├─ config.popup_hotkey を登録
-  │     → popup.show() を root.after(0, ...) でメインスレッドへ
-  │
-  └─ 各 preset.hotkey を登録
-        → apply_preset(preset) を root.after(0, ...) でメインスレッドへ
 
-設定変更（config.on_change）
-  └─ keyboard.unhook_all_hotkeys() → 再登録
+**対策:** イベントハンドラはすべてトップレベル関数として定義し、コントロール参照はグローバル Map で共有する。
+
+### 5.2 ループ内クロージャのキャプチャ問題
+
+```ahk
+; NG: pRef は関数スコープで共有 → 全ハンドラが最後の p を使う
+for p in Presets {
+    pRef := p
+    Hotkey(p.Hotkey, (*) => ApplyPreset(pRef))
+}
+
+; OK: ファクトリ関数で独立スコープを作る
+MakePresetHandler(preset) {
+    return (*) => ApplyPreset(preset)  ; preset は引数なので独立
+}
+for p in Presets {
+    Hotkey(p.Hotkey, MakePresetHandler(p))
+}
 ```
 
-### 4.2 ホットキー文字列形式
+### 5.3 `else if` をクロージャ末尾で使用不可
 
-`keyboard` ライブラリの形式に準拠：
+```ahk
+; NG: クロージャ/関数末尾の else if はパースエラー
+handler := (*) {
+    if cond1
+        a := 1
+    else if cond2   ; ← 末尾の } で "Unexpected }" エラー
+        a := 2
+}
 
+; OK: 三項演算子に書き換える
+a := cond1 ? 1 : (cond2 ? 2 : 0)
+
+; OK: 独立した if 文に分割する
+if cond1
+    a := 1
+if cond2
+    a := 2
 ```
-ctrl+alt+w
-ctrl+shift+1
-alt+f1
+
+### 5.4 ファットアロー vs ブロッククロージャ
+
+| 形式 | 使用可能な場所 | 注意 |
+|------|--------------|------|
+| `(*) => 単一式` | どこでも ○ | 単一式のみ。return 不要 |
+| `(*) { 複数文 }` | トップレベルのみ ○ | 関数内で使うとパースエラーの可能性 |
+| 名前付きトップレベル関数 | どこでも ○ | 最も安全。推奨 |
+
+### 5.5 IniRead / IniWrite はネイティブパスのみ対応
+
+Windows API の `WritePrivateProfileString` を使用するため、UNC パス（`\\wsl.localhost\...`）は書き込み不可。
+
+```ahk
+; NG: WSL パスへの書き込みは失敗する
+global ConfigFile := A_ScriptDir "\wm_config.ini"  ; WSL から実行時に NG
+
+; OK: Windows ネイティブパスを使う
+global ConfigFile := A_AppData "\WindowManager\wm_config.ini"
 ```
+
+### 5.6 エスケープ文字（AHK v2）
+
+| 記法 | 意味 |
+|------|------|
+| `` `n `` | 改行 |
+| `` `t `` | タブ |
+| `` `` `` | バッククォート自身 |
+| `"` (文字列内) | `""` でエスケープ |
+
+AHK v1 の `\n` `\t` は使用不可。
 
 ---
 
-## 5. エラーハンドリング
+## 6. エラーハンドリング
 
-| ケース | 処理 |
-|--------|------|
-| 依存ライブラリ未インストール | 起動時にダイアログ表示 → 終了 |
-| ホットキー登録失敗 | `[WARN]` をコンソール出力、他のキーは継続登録 |
-| ウィンドウが見つからない | スキップ（apply_preset の結果に `False` を記録） |
-| 最大化ウィンドウの移動 | `SW_RESTORE` 後に `SetWindowPos` |
-| 数値パースエラー（レイアウト値） | その行をスキップして保存 |
+| ケース | Python 版 | AHK 版 |
+|--------|-----------|--------|
+| 依存ライブラリ未インストール | ダイアログ → 終了 | — |
+| ホットキー登録失敗 | `[WARN]` をコンソール出力 | `try` で握りつぶし |
+| ウィンドウが見つからない | スキップ | スキップ |
+| 最大化ウィンドウの移動 | SW_RESTORE 後に移動 | WinRestore 後に WinMove |
+| 設定ファイル書き込み失敗 | — | エラーダイアログ表示 |
 
 ---
 
-## 6. 制限事項
+## 7. 制限事項
 
-- マルチモニター対応: プライマリモニターのみ（将来対応予定）
-- UAC昇格が必要なウィンドウ（タスクマネージャー等）は移動不可
-- `keyboard` ライブラリは管理者権限を推奨
-- WSL2 から実行する場合は `py.exe -3 main.py` で Windows Python を使用
+- マルチモニター: プライマリモニターのみ対応（将来対応予定）
+- UAC 昇格が必要なウィンドウ（タスクマネージャー等）は移動不可
+- Python 版は `keyboard` ライブラリの制約で管理者権限を推奨
+- AHK 版のカスタムモードは手動で INI を編集する必要がある
