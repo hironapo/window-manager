@@ -16,18 +16,22 @@ SetWorkingDir(A_ScriptDir)
 ; ═══════════════════════════════════════════════════════════════
 
 ; ── グローバル変数 ───────────────────────────────────────────
-global ConfigFile  := A_AppData "\WindowManager\wm_config.ini"
-global Presets     := []
-global PopupHotkey := "^!w"
-global mgmtGui     := ""
-global selIdx      := 0
+global ConfigFile     := A_AppData "\WindowManager\wm_config.ini"
+global Presets        := []
+global PopupHotkey    := "^!w"
+global mgmtGui        := ""
+global selIdx         := 0
 ; 管理GUIのコントロール参照（トップレベルハンドラから参照）
-global g_C         := Map()
+global g_C            := Map()
+; ミニバー
+global miniBar        := ""
+global miniBarVisible := true
 
 ; ─── 起動 ───────────────────────────────────────────────────
 LoadConfig()
 RegisterHotkeys()
 SetupTray()
+SetupMiniBar()
 return
 
 ; ═══════════════════════════════════════════════════════════════
@@ -105,6 +109,8 @@ WriteDefaultConfig() {
 RegisterHotkeys() {
     global Presets, PopupHotkey
     try Hotkey(PopupHotkey, ShowPopup)
+    try Hotkey("^!t", TileActiveProcess)
+    try Hotkey("^!q", ToggleMiniBar)
     for p in Presets {
         if p.Hotkey != ""
             try Hotkey(p.Hotkey, MakePresetHandler(p))
@@ -118,6 +124,8 @@ MakePresetHandler(preset) {
 UnregisterHotkeys() {
     global Presets, PopupHotkey
     try Hotkey(PopupHotkey, "Off")
+    try Hotkey("^!t", "Off")
+    try Hotkey("^!q", "Off")
     for p in Presets {
         if p.Hotkey != ""
             try Hotkey(p.Hotkey, "Off")
@@ -128,6 +136,7 @@ ReloadHotkeys() {
     UnregisterHotkeys()
     LoadConfig()
     RegisterHotkeys()
+    BuildMiniBar()
 }
 
 ; ═══════════════════════════════════════════════════════════════
@@ -136,16 +145,17 @@ ReloadHotkeys() {
 
 SetupTray() {
     A_TrayMenu.Delete()
-    A_TrayMenu.Add("管理メニュー",       (*) => ShowManagement())
+    A_TrayMenu.Add("管理メニュー",           (*) => ShowManagement())
+    A_TrayMenu.Add("ミニバー 表示/非表示",   (*) => ToggleMiniBar())
     A_TrayMenu.Add()
-    A_TrayMenu.Add("設定をエクスポート", (*) => ExportConfig())
-    A_TrayMenu.Add("設定をインポート",   (*) => ImportConfig())
+    A_TrayMenu.Add("設定をエクスポート",     (*) => ExportConfig())
+    A_TrayMenu.Add("設定をインポート",       (*) => ImportConfig())
     A_TrayMenu.Add()
-    A_TrayMenu.Add("再起動",             (*) => Reload())
-    A_TrayMenu.Add("終了",               (*) => ExitApp())
+    A_TrayMenu.Add("再起動",                 (*) => Reload())
+    A_TrayMenu.Add("終了",                   (*) => ExitApp())
     A_TrayMenu.Default := "管理メニュー"
     TraySetIcon("shell32.dll", 238)
-    A_IconTip := "Window Manager"
+    A_IconTip := "Window Manager  (^!Q: ミニバー)"
 }
 
 ; ═══════════════════════════════════════════════════════════════
@@ -171,21 +181,65 @@ GetAllWindows() {
     return result
 }
 
+; ウィンドウが「実際のアプリウィンドウ」か判定
+; WS_EX_TOOLWINDOW（内部ヘルパー）とタイトルなしを除外
+; ※ WS_CAPTION チェックは除外: Windows Terminal 等 WinUI/UWP アプリが除外されるため
+IsRealAppWindow(hwnd) {
+    try {
+        if WinGetTitle("ahk_id " hwnd) = ""
+            return false
+        exStyle := WinGetExStyle("ahk_id " hwnd)
+        if exStyle & 0x80  ; WS_EX_TOOLWINDOW（内部ヘルパー）
+            return false
+        return true
+    } catch {
+        return false
+    }
+}
+
 FindWindows(app, titleFilter := "") {
     appL   := StrLower(StrReplace(app, ".exe", ""))
     titleL := StrLower(titleFilter)
     result := []
-    for w in GetAllWindows() {
-        exeL     := StrLower(StrReplace(w.exe, ".exe", ""))
-        tL       := StrLower(w.title)
-        appMatch := InStr(exeL, appL) || InStr(tL, appL)
-        if !appMatch
-            continue
-        if titleL != "" && !InStr(tL, titleL)
-            continue
-        result.Push(w.hwnd)
+    seen   := Map()
+
+    ; 各プロセス名のPIDを列挙し、PID単位でウィンドウを取得
+    ; → Chrome等マルチプロセスアプリで全ウィンドウを確実に捕捉
+    try {
+        for hwnd in WinGetList("ahk_exe " appL ".exe") {
+            if seen.Has(hwnd) || !IsRealAppWindow(hwnd)
+                continue
+            title := WinGetTitle("ahk_id " hwnd)
+            if titleL != "" && !InStr(StrLower(title), titleL)
+                continue
+            result.Push(hwnd)
+            seen[hwnd] := 1
+        }
+    }
+
+    ; exe名でヒットしない場合はタイトルで補完（WindowsTerminal等）
+    if result.Length = 0 {
+        for w in GetAllWindows() {
+            if seen.Has(w.hwnd) || !IsRealAppWindow(w.hwnd)
+                continue
+            exeL := StrLower(StrReplace(w.exe, ".exe", ""))
+            tL   := StrLower(w.title)
+            if !InStr(exeL, appL) && !InStr(tL, appL)
+                continue
+            if titleL != "" && !InStr(tL, titleL)
+                continue
+            result.Push(w.hwnd)
+        }
     }
     return result
+}
+
+; ウィンドウを復元・アクティブ化してから移動（Chrome等で必要）
+RestoreAndMove(hwnd, x, y, w, h) {
+    WinRestore("ahk_id " hwnd)
+    WinActivate("ahk_id " hwnd)
+    WinWaitActive("ahk_id " hwnd,, 1)
+    WinMove(x, y, w, h, "ahk_id " hwnd)
 }
 
 ArrangeWindows(hwnds, direction) {
@@ -197,16 +251,14 @@ ArrangeWindows(hwnds, direction) {
         w := wa.w // n
         i := 0
         for hwnd in hwnds {
-            WinRestore("ahk_id " hwnd)
-            WinMove(wa.x + i*w, wa.y, w, wa.h, "ahk_id " hwnd)
+            RestoreAndMove(hwnd, wa.x + i*w, wa.y, w, wa.h)
             i++
         }
     } else if direction = "vertical" {
         h := wa.h // n
         i := 0
         for hwnd in hwnds {
-            WinRestore("ahk_id " hwnd)
-            WinMove(wa.x, wa.y + i*h, wa.w, h, "ahk_id " hwnd)
+            RestoreAndMove(hwnd, wa.x, wa.y + i*h, wa.w, h)
             i++
         }
     } else if direction = "tile" {
@@ -216,8 +268,7 @@ ArrangeWindows(hwnds, direction) {
         th   := wa.h // rows
         i    := 0
         for hwnd in hwnds {
-            WinRestore("ahk_id " hwnd)
-            WinMove(wa.x + Mod(i,cols)*tw, wa.y + (i//cols)*th, tw, th, "ahk_id " hwnd)
+            RestoreAndMove(hwnd, wa.x + Mod(i,cols)*tw, wa.y + (i//cols)*th, tw, th)
             i++
         }
     }
@@ -262,6 +313,148 @@ ApplyPreset(preset) {
             WinMove(x, y, w, h, "ahk_id " hwnd)
         }
     }
+}
+
+; アクティブウィンドウと同じプロセスの全ウィンドウをタイル表示 (Ctrl+Alt+T)
+TileActiveProcess(*) {
+    try {
+        hwndActive := WinGetID("A")
+        exe := WinGetProcessName("ahk_id " hwndActive)
+    } catch {
+        return
+    }
+    if exe = ""
+        return
+    ; スクリプト自身のウィンドウ（管理メニュー等）は除外
+    if WinGetPID("ahk_id " hwndActive) = DllCall("GetCurrentProcessId")
+        return
+    hwnds := FindWindows(StrReplace(exe, ".exe", ""))
+    if hwnds.Length = 0
+        return
+    ArrangeWindows(hwnds, "tile")
+    name := StrReplace(exe, ".exe", "")
+    ToolTip("タイル完了: " name " (" hwnds.Length " ウィンドウ)")
+    SetTimer(() => ToolTip(), -2000)
+}
+
+; ═══════════════════════════════════════════════════════════════
+;  MINI BAR（常時表示フローティングメニュー）
+;  Ctrl+Alt+Q で表示/非表示トグル、ヘッダーをドラッグで移動
+; ═══════════════════════════════════════════════════════════════
+
+SetupMiniBar() {
+    OnMessage(0x0084, OnMiniNcHitTest)  ; WM_NCHITTEST（ドラッグ用）
+    OnMessage(0x0003, OnMiniBarMove)    ; WM_MOVE（位置保存）
+    BuildMiniBar()
+}
+
+BuildMiniBar() {
+    global miniBar, miniBarVisible, Presets, ConfigFile, miniDragHwnd
+
+    if IsObject(miniBar) {
+        miniBar.Destroy()
+        miniBar := ""
+    }
+
+    bx := Integer(IniRead(ConfigFile, "MiniBar", "X", A_ScreenWidth - 170))
+    by := Integer(IniRead(ConfigFile, "MiniBar", "Y", 10))
+    bw := 162
+
+    miniBar := Gui("-Caption +AlwaysOnTop +ToolWindow", "WM Mini")
+    miniBar.BackColor := "1E1E2E"
+    miniBar.SetFont("s9", "Meiryo")
+    miniBar.MarginX := 0
+    miniBar.MarginY := 0
+
+    ; ヘッダー（ドラッグ用・タイトル）
+    miniBar.Add("Text", "x0 y0 w142 h20 0x201 c9999CC Background16213E", "  ⚡ WM")
+    ; 非表示ボタン（×）
+    miniBar.Add("Text", "x142 y0 w20 h20 0x201 cFF8888 Background16213E", "×").OnEvent("Click", (*) => ToggleMiniBar())
+
+    y := 21
+    miniBar.Add("Text", "x0 y" y " w162 h1 Background333355", "")
+    y += 4
+
+    ; プリセットボタン（ホットキーを右側に表示）
+    for p in Presets {
+        label := SubStr(p.Name, 1, 14)
+        if p.Hotkey != ""
+            label .= "  [" p.Hotkey "]"
+        miniBar.Add("Button", "x2 y" y " w158 h22", label).OnEvent("Click", MakeMiniHandler(p))
+        y += 24
+    }
+
+    ; 固定機能ボタン
+    miniBar.Add("Text", "x0 y" y " w162 h1 Background333355", "")
+    y += 4
+    miniBar.Add("Button", "x2 y" y " w158 h22", "▶ アクティブをタイル").OnEvent("Click", (*) => TileActiveProcess())
+    y += 24
+    miniBar.Add("Button", "x2 y" y " w158 h22", "⚙ 管理メニュー").OnEvent("Click", (*) => ShowManagement())
+    y += 26
+
+    miniBar.Show("x" bx " y" by " w" bw " h" y " NoActivate")
+    WinSetTransparent(215, "ahk_id " miniBar.Hwnd)
+
+    if !miniBarVisible
+        miniBar.Hide()
+}
+
+MakeMiniHandler(preset) {
+    return (*) => ApplyPreset(preset)
+}
+
+ToggleMiniBar(*) {
+    global miniBar, miniBarVisible
+    if !IsObject(miniBar)
+        return
+    if miniBarVisible {
+        miniBar.Hide()
+        miniBarVisible := false
+    } else {
+        miniBar.Show("NoActivate")
+        miniBarVisible := true
+    }
+}
+
+OnMiniNcHitTest(wParam, lParam, msg, hwnd) {
+    global miniBar
+    if !IsObject(miniBar)
+        return
+    ; ミニバー本体またはその子コントロールのみ対象
+    barHwnd := miniBar.Hwnd
+    if hwnd != barHwnd {
+        if DllCall("GetParent", "Ptr", hwnd, "Ptr") != barHwnd
+            return
+    }
+    ; スクリーン座標 → ウィンドウ相対座標（符号拡張考慮）
+    WinGetPos(&wx, &wy,,, "ahk_id " barHwnd)
+    screenX := lParam & 0xFFFF
+    screenY := (lParam >> 16) & 0xFFFF
+    if screenX >= 0x8000
+        screenX -= 0x10000
+    if screenY >= 0x8000
+        screenY -= 0x10000
+    relX := screenX - wx
+    relY := screenY - wy
+    ; ヘッダー領域（×ボタン x>=142 は除外）でHTCAPTIONを返す
+    if relY >= 0 && relY < 22 && relX >= 0 && relX < 142
+        return 2  ; HTCAPTION → OSがドラッグを処理
+}
+
+OnMiniBarMove(wParam, lParam, msg, hwnd) {
+    global miniBar
+    if !IsObject(miniBar) || hwnd != miniBar.Hwnd
+        return
+    SetTimer(SaveMiniBarPos, -800)
+}
+
+SaveMiniBarPos() {
+    global miniBar, ConfigFile
+    if !IsObject(miniBar)
+        return
+    WinGetPos(&wx, &wy,,, "ahk_id " miniBar.Hwnd)
+    IniWrite(wx, ConfigFile, "MiniBar", "X")
+    IniWrite(wy, ConfigFile, "MiniBar", "Y")
 }
 
 ; ═══════════════════════════════════════════════════════════════
@@ -359,8 +552,9 @@ ShowManagement(*) {
     eName := mgmtGui.Add("Edit", "x" IX " y92 w" (CW-LW-4), "")
 
     mgmtGui.Add("Text", "x" CX " y126 w" LW " Right", "ホットキー：")
-    eHotkey := mgmtGui.Add("Edit", "x" IX " y124 w150", "")
-    mgmtGui.Add("Text", "x" (IX+156) " y127 cGray", "例: ^!1 = Ctrl+Alt+1   # = Win")
+    eHotkey := mgmtGui.Add("Edit", "x" IX " y124 w120", "")
+    mgmtGui.Add("Button", "x" (IX+126) " y122 w46 h24", "自動").OnEvent("Click", BtnAutoHkEvt)
+    mgmtGui.Add("Text", "x" (IX+178) " y127 cGray", "^!1〜^!9  # = Win")
 
     mgmtGui.Add("Text", "x" CX " y160 w" LW " Right", "モード：")
     mgmtGui.Add("Radio", "x" IX " y160 Checked", "自動タイル")
@@ -390,6 +584,7 @@ ShowManagement(*) {
     mgmtGui.Add("Text",   "x0 y458 w800 h2 BackgroundE8F4FC", "")
     mgmtGui.Add("Button", "x226 y468 w108 h34", "インポート").OnEvent("Click",  BtnImportEvt)
     mgmtGui.Add("Button", "x340 y468 w108 h34", "エクスポート").OnEvent("Click", BtnExportEvt)
+    mgmtGui.Add("Button", "x460 y468 w128 h34", "▶ テスト実行").OnEvent("Click", BtnTestEvt)
     mgmtGui.Add("Button", "x648 y468 w128 h34", "保存").OnEvent("Click",         BtnSaveEvt)
 
     ; ── コントロール参照を g_C に保存
@@ -420,7 +615,7 @@ MgmtCloseEvt(*) {
 
 LvSelectEvt(*) {
     global selIdx, Presets, g_C
-    idx := g_C["lv"].GetNext(0, "Selected")
+    idx := g_C["lv"].GetNext(0, "Focused")
     if idx < 1 || idx > Presets.Length
         return
     selIdx := idx
@@ -471,11 +666,31 @@ BtnDeleteEvt(*) {
 }
 
 BtnSaveEvt(*) {
-    global selIdx, Presets, g_C
+    global selIdx, Presets, g_C, PopupHotkey
     name := Trim(g_C["eName"].Value)
     if name = "" {
         MsgBox("名前を入力してください", "エラー", "0x10")
         return
+    }
+    hk := Trim(g_C["eHotkey"].Value)
+    ; ホットキー重複チェック
+    if hk != "" {
+        if hk = PopupHotkey {
+            MsgBox("「" hk "」はポップアップキーと重複しています。", "ホットキー重複", "0x10")
+            return
+        }
+        if hk = "^!t" || hk = "^!q" {
+            MsgBox("「" hk "」はシステム予約キーです。", "ホットキー重複", "0x10")
+            return
+        }
+        for i, pr in Presets {
+            if i = selIdx
+                continue
+            if pr.Hotkey = hk {
+                MsgBox("「" hk "」はすでに「" pr.Name "」で使用中です。", "ホットキー重複", "0x10")
+                return
+            }
+        }
     }
     dir := "horizontal"
     if g_C["rV"].Value
@@ -484,12 +699,18 @@ BtnSaveEvt(*) {
         dir := "tile"
     p := {
         Name:    name,
-        Hotkey:  Trim(g_C["eHotkey"].Value),
+        Hotkey:  hk,
         Mode:    "arrange",
         App:     Trim(g_C["eApp"].Value),
         Title:   Trim(g_C["eTitle"].Value),
         Arrange: dir,
         Windows: "",
+    }
+    ; Presets 更新前に古いホットキーを解除（変更前のキーを先に消す）
+    if selIdx > 0 {
+        oldHk := Presets[selIdx].Hotkey
+        if oldHk != "" && oldHk != hk
+            try Hotkey(oldHk, "Off")
     }
     if selIdx > 0
         Presets[selIdx] := p
@@ -502,11 +723,68 @@ BtnSaveEvt(*) {
     SetTimer(() => ToolTip(), -2000)
 }
 
+BtnAutoHkEvt(*) {
+    AutoAssignHotkey()
+}
+
+AutoAssignHotkey() {
+    global Presets, PopupHotkey, g_C, selIdx
+    used := Map()
+    used[PopupHotkey] := 1
+    used["^!t"] := 1
+    used["^!q"] := 1
+    for i, pr in Presets {
+        if i != selIdx && pr.Hotkey != ""
+            used[pr.Hotkey] := 1
+    }
+    loop 9 {
+        candidate := "^!" A_Index
+        if !used.Has(candidate) {
+            g_C["eHotkey"].Value := candidate
+            return
+        }
+    }
+    MsgBox("^!1〜^!9 がすべて使用中です。", "自動割当", "0x30")
+}
+
 BtnPickAppEvt(*) {
     global mgmtGui, g_C
     result := PickWindow(mgmtGui)
     if result != ""
         g_C["eApp"].Value := result
+}
+
+BtnTestEvt(*) {
+    global selIdx, Presets, g_C, mgmtGui
+    name := Trim(g_C["eName"].Value)
+    app  := Trim(g_C["eApp"].Value)
+    if app = "" {
+        MsgBox("アプリ名が入力されていません。", "テスト実行", "0x30")
+        return
+    }
+    dir := "horizontal"
+    if g_C["rV"].Value
+        dir := "vertical"
+    if g_C["rT"].Value
+        dir := "tile"
+    testPreset := {
+        Name:    name,
+        Mode:    "arrange",
+        App:     app,
+        Title:   Trim(g_C["eTitle"].Value),
+        Arrange: dir,
+        Windows: "",
+        Hotkey:  "",
+    }
+    ; 管理ウィンドウを一時的に最小化して結果を確認しやすくする
+    if IsObject(mgmtGui)
+        mgmtGui.Minimize()
+    ApplyPreset(testPreset)
+    Sleep(800)
+    if IsObject(mgmtGui)
+        mgmtGui.Show()
+    ToolTip("テスト実行: " app " → " dir)
+    SetTimer(() => ToolTip(), -2000)
 }
 
 BtnImportEvt(*) {
@@ -564,7 +842,7 @@ ImportConfig() {
 PickWindow(ownerGui) {
     global g_C
     shared   := Map("result", "")
-    dlg      := Gui("+Owner" ownerGui.Hwnd " +Modal", "ウィンドウを選択")
+    dlg      := Gui("+Owner" ownerGui.Hwnd, "ウィンドウを選択")
     dlg.BackColor := "FFFFFF"
     dlg.SetFont("s10", "Meiryo")
     dlg.OnEvent("Close", (*) => 0)
