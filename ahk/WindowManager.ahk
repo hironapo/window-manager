@@ -1,4 +1,4 @@
-#Requires AutoHotkey v2.0
+﻿#Requires AutoHotkey v2.0
 #SingleInstance Force
 SetWorkingDir(A_ScriptDir)
 
@@ -89,7 +89,7 @@ WriteDefaultConfig() {
     IniWrite("^!1",             ConfigFile, "Preset_1", "Hotkey")
     IniWrite("arrange",         ConfigFile, "Preset_1", "Mode")
     IniWrite("WindowsTerminal", ConfigFile, "Preset_1", "App")
-    IniWrite("wsl",             ConfigFile, "Preset_1", "Title")
+    IniWrite("",                ConfigFile, "Preset_1", "Title")
     IniWrite("horizontal",      ConfigFile, "Preset_1", "Arrange")
     IniWrite("",                ConfigFile, "Preset_1", "Windows")
 
@@ -203,8 +203,7 @@ FindWindows(app, titleFilter := "") {
     result := []
     seen   := Map()
 
-    ; 各プロセス名のPIDを列挙し、PID単位でウィンドウを取得
-    ; → Chrome等マルチプロセスアプリで全ウィンドウを確実に捕捉
+    ; exe名でウィンドウ検索
     try {
         for hwnd in WinGetList("ahk_exe " appL ".exe") {
             if seen.Has(hwnd) || !IsRealAppWindow(hwnd)
@@ -217,7 +216,7 @@ FindWindows(app, titleFilter := "") {
         }
     }
 
-    ; exe名でヒットしない場合はタイトルで補完（WindowsTerminal等）
+    ; exe名でヒットしない場合: exe名またはタイトルで補完
     if result.Length = 0 {
         for w in GetAllWindows() {
             if seen.Has(w.hwnd) || !IsRealAppWindow(w.hwnd)
@@ -229,8 +228,20 @@ FindWindows(app, titleFilter := "") {
             if titleL != "" && !InStr(tL, titleL)
                 continue
             result.Push(w.hwnd)
+            seen[w.hwnd] := 1
         }
     }
+
+    ; 最終フォールバック: タイトルのみで検索（WSL等exe名が一致しないケース）
+    if result.Length = 0 && titleL != "" {
+        for w in GetAllWindows() {
+            if seen.Has(w.hwnd) || !IsRealAppWindow(w.hwnd)
+                continue
+            if InStr(StrLower(w.title), titleL)
+                result.Push(w.hwnd)
+        }
+    }
+
     return result
 }
 
@@ -244,8 +255,10 @@ RestoreAndMove(hwnd, x, y, w, h) {
 
 ArrangeWindows(hwnds, direction) {
     n := hwnds.Length
-    if n = 0
+    if n = 0 {
+        TrayTip("Window Manager", "ウィンドウが見つかりませんでした", 2)
         return
+    }
     wa := GetWorkArea()
     if direction = "horizontal" {
         w := wa.w // n
