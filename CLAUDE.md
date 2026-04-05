@@ -1,5 +1,19 @@
 # window-manager プロジェクト ルール・既知バグ記録
 
+## 作業開始時の必須確認
+
+**必ずメモリファイルを読むこと（毎回）**:
+
+```
+~/.claude/projects/-home-matuhiro-python-window-manager/memory/MEMORY.md
+```
+
+- `dashboard.md` — 設計・ファイル構成・バグ修正履歴
+- `ahk-syntax.md` — AHK v2 構文の落とし穴
+- `work-log.md` — 日付別作業ログ
+
+**作業終了時**: `work-log.md` に今回の作業を追記すること。
+
 ## プロジェクト概要
 - Windows 11向けウィンドウ配置管理ツール（Python版 + AHK v2版）
 - AHK版（`ahk/WindowManager.ahk`）はスタンドアロンで動作
