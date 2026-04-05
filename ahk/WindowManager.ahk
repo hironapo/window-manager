@@ -434,7 +434,12 @@ OnMiniNcHitTest(wParam, lParam, msg, hwnd) {
     if !IsObject(miniBar)
         return
     ; ミニバー本体またはその子コントロールのみ対象
-    barHwnd := miniBar.Hwnd
+    try
+        barHwnd := miniBar.Hwnd
+    catch {
+        miniBar := ""
+        return
+    }
     if hwnd != barHwnd {
         if DllCall("GetParent", "Ptr", hwnd, "Ptr") != barHwnd
             return
@@ -456,8 +461,15 @@ OnMiniNcHitTest(wParam, lParam, msg, hwnd) {
 
 OnMiniBarMove(wParam, lParam, msg, hwnd) {
     global miniBar
-    if !IsObject(miniBar) || hwnd != miniBar.Hwnd
+    if !IsObject(miniBar)
         return
+    try {
+        if hwnd != miniBar.Hwnd
+            return
+    } catch {
+        miniBar := ""
+        return
+    }
     SetTimer(SaveMiniBarPos, -800)
 }
 
@@ -465,7 +477,13 @@ SaveMiniBarPos() {
     global miniBar, ConfigFile
     if !IsObject(miniBar)
         return
-    WinGetPos(&wx, &wy,,, "ahk_id " miniBar.Hwnd)
+    try
+        barHwnd := miniBar.Hwnd
+    catch {
+        miniBar := ""
+        return
+    }
+    WinGetPos(&wx, &wy,,, "ahk_id " barHwnd)
     IniWrite(wx, ConfigFile, "MiniBar", "X")
     IniWrite(wy, ConfigFile, "MiniBar", "Y")
 }
@@ -637,9 +655,12 @@ LvSelectEvt(*) {
     g_C["eHotkey"].Value := p.Hotkey
     g_C["eApp"].Value    := p.App
     g_C["eTitle"].Value  := p.Title
-    g_C["rH"].Value := 1
-    g_C["rV"].Value := (p.Arrange = "vertical") ? 1 : 0
-    g_C["rT"].Value := (p.Arrange = "tile")     ? 1 : 0
+    if p.Arrange = "vertical"
+        g_C["rV"].Value := 1
+    else if p.Arrange = "tile"
+        g_C["rT"].Value := 1
+    else
+        g_C["rH"].Value := 1
 }
 
 SaveHkEvt(*) {
